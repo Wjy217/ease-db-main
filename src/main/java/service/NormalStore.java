@@ -2,6 +2,7 @@ package service;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
+import dto.WALEntry;
 import model.command.Command;
 import model.command.CommandPos;
 import model.command.RmCommand;
@@ -31,7 +32,7 @@ public class NormalStore implements Store {
     private final String logFormat = "[NormalStore][{}]: {}";
 
     private static final int MEMORY_TABLE_THRESHOLD = 1000;   //内存表大小阈值：存储命令的最大数量
-    private static final int FILE_SIZE_THRESHOLD = 1024*1024; //单个文件大小阈值
+    private static final int FILE_SIZE_THRESHOLD = 1024 * 1024; //单个文件大小阈值
 
     private TreeMap<String, Command> memTable;   //存储命令的内存表
     private HashMap<String, CommandPos> index;   //哈希索引，存的是数据长度和偏移量
@@ -40,12 +41,15 @@ public class NormalStore implements Store {
     private RandomAccessFile writerReader;   //暂存数据的日志句柄
     private int currentFileIndex = 0;   //当前文件的索引
 
+    private RandomAccessFile walFile;
+
     public NormalStore(String dataDir) throws FileNotFoundException {
         this.dataDir = dataDir;
         this.indexLock = new ReentrantReadWriteLock();
         this.memTable = new TreeMap<>();
         this.index = new HashMap<>();
         this.writerReader = new RandomAccessFile(this.genFilePath(), RW_MODE);
+        this.walFile = new RandomAccessFile(this.dataDir + File.separator + "wal.log", RW_MODE);
 
         File file = new File(dataDir);
         if (!file.exists()) {
@@ -53,6 +57,39 @@ public class NormalStore implements Store {
             file.mkdirs();
         }
         this.reloadIndex();
+        this.replayLog();
+    }
+
+    private void logToWAL(String commandType, String key, String value) {
+        try {
+            WALEntry entry = new WALEntry(commandType, key, value);
+            byte[] entryBytes = JSONObject.toJSONBytes(entry);
+            walFile.writeInt(entryBytes.length);
+            walFile.write(entryBytes);
+            walFile.getFD().sync();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void replayLog() {
+        try {
+            walFile.seek(0); // Go to the start of the WAL file
+            while (walFile.getFilePointer() < walFile.length()) {
+                int entryLen = walFile.readInt();
+                byte[] entryBytes = new byte[entryLen];
+                walFile.read(entryBytes);
+                WALEntry entry = JSONObject.parseObject(new String(entryBytes), WALEntry.class);
+
+                if ("set".equals(entry.getCommandType())) {
+                    set(entry.getKey(), entry.getValue());
+                } else if ("rm".equals(entry.getCommandType())) {
+                    rm(entry.getKey());
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     //生成文件路径
@@ -60,46 +97,7 @@ public class NormalStore implements Store {
         return this.dataDir + File.separator + NAME + currentFileIndex + TABLE;
     }
 
-    //重新加载索引
-//    public void reloadIndex() {
-//        try {
-//            for (int i = 0; i <= currentFileIndex; i++) {
-//                String filePath = this.dataDir + File.separator + NAME + i + TABLE;
-//                RandomAccessFile file = new RandomAccessFile(filePath, RW_MODE);
-//                FileChannel channel = file.getChannel();
-//                ByteBuffer buffer = ByteBuffer.allocate(1024); // 分配一个缓冲区
-//                long start = 0;
-//
-//                while (channel.read(buffer) != -1) {
-//                    buffer.flip();
-//                    while (buffer.remaining() > 4) {
-//                        int cmdLen = buffer.getInt();
-//                        if (buffer.remaining() >= cmdLen) {
-//                            byte[] bytes = new byte[cmdLen];
-//                            buffer.get(bytes);
-//                            String jsonString = new String(bytes, StandardCharsets.UTF_8);
-//                            JSONObject value = JSON.parseObject(jsonString);
-//                            Command command = CommandUtil.jsonToCommand(value);
-//                            start += 4;
-//                            if (command != null) {
-//                                CommandPos cmdPos = new CommandPos((int) start, cmdLen);
-//                                index.put(command.getKey(), cmdPos);
-//                            }
-//                            start += cmdLen;
-//                        } else {
-//                            buffer.position(buffer.position() - 4); // 回退4个字节
-//                            break;
-//                        }
-//                    }
-//                    buffer.compact(); // 压缩缓冲区以便继续读取
-//                }
-//                file.close();
-//            }
-//        } catch (Exception e) {
-//            e.printStackTrace();
-//        }
-//        LoggerUtil.debug(LOGGER, logFormat, "重新加载索引: " + index.toString());
-//    }
+
     public void reloadIndex() {
         try {
             for (int i = 0; i <= currentFileIndex; i++) {
@@ -146,6 +144,7 @@ public class NormalStore implements Store {
     //如果内存表大小超过阈值，则将内存表中的数据写入磁盘。然后将键值对数据写入磁盘文件，并更新索引。
     @Override
     public void set(String key, String value) {
+        logToWAL("set", key, value);
         try {
             SetCommand command = new SetCommand(key, value);
             byte[] commandBytes = JSONObject.toJSONBytes(command);
@@ -178,6 +177,7 @@ public class NormalStore implements Store {
     //如果是SetCommand对象，则返回其对应的值；如果是RmCommand对象，则返回null。
     @Override
     public String get(String key) {
+
         try {
             indexLock.readLock().lock();
             //获取信息
@@ -207,6 +207,7 @@ public class NormalStore implements Store {
     // 如果内存表大小超过阈值，则将内存表中的数据写入磁盘。然后将删除命令写入磁盘文件，并更新索引。
     @Override
     public void rm(String key) {
+        logToWAL("rm", key, null);
         try {
             RmCommand command = new RmCommand(key);
             byte[] commandBytes = JSONObject.toJSONBytes(command);
