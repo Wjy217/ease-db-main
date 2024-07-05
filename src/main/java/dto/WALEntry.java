@@ -13,4 +13,5 @@ public class WALEntry {
         this.key = key;
         this.value = value;
     }
+
 }

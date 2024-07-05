@@ -31,8 +31,8 @@ public class NormalStore implements Store {
     private final Logger LOGGER = LoggerFactory.getLogger(NormalStore.class);
     private final String logFormat = "[NormalStore][{}]: {}";
 
-    private static final int MEMORY_TABLE_THRESHOLD = 1000;   //内存表大小阈值：存储命令的最大数量
-    private static final int FILE_SIZE_THRESHOLD = 1024 * 1024; //单个文件大小阈值
+    private static final int MEMORY_TABLE_THRESHOLD = 4;   //内存表大小阈值：存储命令的最大数量
+    private static final int FILE_SIZE_THRESHOLD = 1024*1024; //单个文件大小阈值
 
     private TreeMap<String, Command> memTable;   //存储命令的内存表
     private HashMap<String, CommandPos> index;   //哈希索引，存的是数据长度和偏移量
@@ -92,9 +92,18 @@ public class NormalStore implements Store {
         }
     }
 
+
     //生成文件路径
     public String genFilePath() {
         return this.dataDir + File.separator + NAME + currentFileIndex + TABLE;
+    }
+
+    public String setFilePath() {
+        return this.dataDir + File.separator + "set"  + TABLE;
+    }
+
+    public String rmFilePath() {
+        return this.dataDir + File.separator + "rm"  + TABLE;
     }
 
 
@@ -156,7 +165,8 @@ public class NormalStore implements Store {
             // TODO://判断是否需要将内存表中的值写回table
             //如果内存表的大小超过阈值，则将内存表的数据写入磁盘
             if (memTable.size() >= MEMORY_TABLE_THRESHOLD) {
-                writeToDisk();
+                writeToDisk(this.setFilePath());
+                writeToDisk(this.genFilePath());
             }
 
             rotateIfNeeded();
@@ -219,7 +229,8 @@ public class NormalStore implements Store {
             // TODO://判断是否需要将内存表中的值写回table
             //如果内存表的大小超过阈值，则将内存表中的数据写入磁盘
             if (memTable.size() >= MEMORY_TABLE_THRESHOLD) {
-                writeToDisk();
+                writeToDisk(this.rmFilePath());
+                writeToDisk(this.genFilePath());
             }
             rotateIfNeeded();   //文件切换
             int pos = RandomAccessFileUtil.write(this.genFilePath(), commandBytes);
@@ -240,7 +251,7 @@ public class NormalStore implements Store {
 
     //================写入磁盘，实现数据持久化==============
     //将内存表中的数据写入磁盘，同时更新索引
-    private void writeToDisk() {
+    private void writeToDisk(String path) {
         try {
             //将内存表大小写入磁盘文件
             RandomAccessFileUtil.writeInt(this.genFilePath(), memTable.size());
@@ -248,7 +259,8 @@ public class NormalStore implements Store {
                 //将命令对象转换为字节数组
                 byte[] commandBytes = JSONObject.toJSONBytes(command);
                 //将命令字节数组写入磁盘文件，获取写入位置
-                int pos = RandomAccessFileUtil.write(this.genFilePath(), commandBytes);
+
+                int pos = RandomAccessFileUtil.write(path, commandBytes);
                 CommandPos commandPos = new CommandPos(pos, commandBytes.length);  //创建命令位置对象
                 index.put(command.getKey(), commandPos);   //将命令位置对象添加到索引中
             }
@@ -334,34 +346,6 @@ public class NormalStore implements Store {
             categorized.get(category).add(command);   //添加到对应的命令列表中
         }
         return categorized;
-    }
-
-    //在 NormalStore 类中添加 replayLog 方法
-    public void replayLog(String logFilePath) {
-        try {
-            RandomAccessFile logFile = new RandomAccessFile("../../../../../data/logfile", "r");
-
-            while (logFile.getFilePointer() < logFile.length()) {
-                int cmdLen = logFile.readInt(); // 读取命令长度
-                byte[] commandBytes = new byte[cmdLen];
-                logFile.read(commandBytes); // 读取命令数据
-                JSONObject value = JSONObject.parseObject(new String(commandBytes));
-                Command command = CommandUtil.jsonToCommand(value); // 解析命令对象
-
-                if (command instanceof SetCommand) {
-                    SetCommand setCmd = (SetCommand) command;
-                    set(setCmd.getKey(), setCmd.getValue()); // 执行 set 操作
-                } else if (command instanceof RmCommand) {
-                    RmCommand rmCmd = (RmCommand) command;
-//                    remove(rmCmd.getKey()); // 执行 remove 操作
-                }
-                // 可以根据实际情况继续处理其他类型的命令
-            }
-
-            logFile.close(); // 关闭日志文件
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
     }
 }
 
