@@ -18,10 +18,9 @@ public class SocketClientUsage {
         Client client = new SocketClient(host, port);
         CmdClient cmdClient = new CmdClient(client);
         cmdClient.run();
-//        client.get("zsy1");
-        client.set("zsy12", "for test");
-        client.get("zsy12");
-        client.rm("zsy12");
-        client.get("zsy12");
+        client.set("wjy11", "for test");
+        client.get("wjy11");
+        client.rm("wjy11");
+        client.get("wjy11");
     }
 }
